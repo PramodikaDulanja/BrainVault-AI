@@ -1,0 +1,31 @@
+version: "3.8"
+
+services:
+  # Relational Database for Application Data (Users, Categories, Metadata)
+  postgres:
+    image: postgres:15
+    container_name: brainvault-postgres
+    environment:
+      POSTGRES_USER: brainvault_user
+      POSTGRES_PASSWORD: brainvault_password
+      POSTGRES_DB: brainvault_db
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  # Vector Database for Embeddings & Semantic Search
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: brainvault-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  qdrant_data:

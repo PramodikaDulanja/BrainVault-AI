@@ -1,0 +1,13 @@
+# Python & Backend
+backend/venv/
+backend/.env
+__pycache__/
+*.pyc
+
+# Next.js & Frontend
+frontend/node_modules/
+frontend/.next/
+frontend/.env*
+
+# OS Files
+.DS_Store

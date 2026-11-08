@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+sqlalchemy
+psycopg2-binary
+qdrant-client
+llama-index
+pymupdf
+python-multipart
+python-dotenv
