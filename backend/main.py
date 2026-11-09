@@ -1,4 +1,5 @@
 from fastapi import FastAPI, UploadFile, File, Depends
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from dotenv import load_dotenv
 import os
@@ -24,7 +25,17 @@ import platform
 
 from llama_index.core.memory import ChatMemoryBuffer
 
-    
+app = FastAPI(title="BrainVault AI Backend")
+
+# allow Next.js to connect
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 # 1. Dynamically set paths based on the Operating System
 if platform.system() == "Windows":
@@ -49,7 +60,6 @@ models.Base.metadata.create_all(bind=engine)
 
 load_dotenv()
 
-app = FastAPI(title="BrainVault AI Backend")
 
 # Initialize the Groq LLM
 llm = Groq(model="openai/gpt-oss-20b", api_key=os.getenv("GROQ_API_KEY"))
