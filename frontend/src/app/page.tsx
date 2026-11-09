@@ -2,24 +2,25 @@
 import { useState } from "react";
 
 export default function Home() {
-  // Inbox State
-  const [status, setStatus] = useState("Waiting for file...");
+  const [status, setStatus] = useState("Waiting for file or link...");
   const [resourceId, setResourceId] = useState<number | null>(null);
   const [categoryInfo, setCategoryInfo] = useState<any>(null);
 
-  // Chat State
+  // New URL State
+  const [url, setUrl] = useState("");
+
   const [query, setQuery] = useState("");
   const [messages, setMessages] = useState<{ role: string; content: string }[]>(
     [],
   );
   const [isChatLoading, setIsChatLoading] = useState(false);
 
-  // 1. FAST UPLOAD TIER
+  // --- API FUNCTIONS ---
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    setStatus("Uploading and analyzing (Fast Step)...");
+    setStatus("Uploading and analyzing PDF...");
     setCategoryInfo(null);
     setResourceId(null);
 
@@ -32,20 +33,17 @@ export default function Home() {
         body: formData,
       });
       const data = await res.json();
-
       setResourceId(data.resource_id);
       setStatus(`Fast upload complete! Status: ${data.status}`);
       setCategoryInfo({ category: data.category, tags: [] });
     } catch (error) {
       setStatus("Error uploading file.");
-      console.error(error);
     }
   };
 
-  // 2. DEEP PROCESSING TIER
   const triggerDeepProcessing = async () => {
     if (!resourceId) return;
-    setStatus("Running deep OCR and AI verification (this takes a minute)...");
+    setStatus("Running deep OCR and AI verification...");
 
     try {
       const res = await fetch(
@@ -55,7 +53,6 @@ export default function Home() {
         },
       );
       const data = await res.json();
-
       setStatus("Processing complete & saved to Qdrant!");
       setCategoryInfo({
         category: data.verified_category,
@@ -64,11 +61,38 @@ export default function Home() {
       });
     } catch (error) {
       setStatus("Error during deep processing.");
-      console.error(error);
     }
   };
 
-  // 3. AI CHAT LOGIC
+  // New Link Ingestion Handler
+  const handleUrlSubmit = async () => {
+    if (!url.trim()) return;
+
+    setStatus("Scraping webpage and analyzing content...");
+    setCategoryInfo(null);
+    setResourceId(null);
+
+    try {
+      const res = await fetch("http://127.0.0.1:8000/api/resources/link", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: url }),
+      });
+      const data = await res.json();
+
+      if (data.error) {
+        setStatus(`Error: ${data.error}`);
+        return;
+      }
+
+      setStatus(`Link embedded! Title: ${data.title}`);
+      setCategoryInfo({ category: data.category, tags: data.tags || [] });
+      setUrl(""); // Clear input
+    } catch (error) {
+      setStatus("Error ingesting link.");
+    }
+  };
+
   const handleSendMessage = async () => {
     if (!query.trim()) return;
 
@@ -84,7 +108,6 @@ export default function Home() {
         body: JSON.stringify({ query: query, session_id: "default_session" }),
       });
       const data = await res.json();
-
       setMessages([
         ...newMessages,
         { role: "ai", content: data.answer || data.error },
@@ -100,21 +123,14 @@ export default function Home() {
   };
 
   return (
-    <main className="min-h-screen bg-gray-50 p-8 text-gray-900">
+    <main className="p-8">
       <div className="max-w-6xl mx-auto">
-        <header className="mb-10">
-          <h1 className="text-4xl font-bold text-blue-600">BrainVault AI</h1>
-          <p className="text-gray-500 mt-2">
-            Your Personal Second Brain & Smart Inbox
-          </p>
-        </header>
-
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-          {/* Left Column: Smart Inbox Upload */}
+          {/* Smart Inbox */}
           <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex flex-col h-full">
             <h2 className="text-2xl font-semibold mb-4">Smart Inbox</h2>
 
-            <div className="border-2 border-dashed border-gray-300 rounded-lg p-10 text-center relative hover:bg-gray-50 transition-colors">
+            <div className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center relative hover:bg-gray-50 transition-colors">
               <p className="text-gray-500 mb-4">Select a PDF to upload</p>
               <input
                 type="file"
@@ -127,7 +143,34 @@ export default function Home() {
               </button>
             </div>
 
-            <div className="mt-6 bg-gray-50 p-4 rounded-lg border border-gray-200 flex-1">
+            {/* URL Input Area */}
+            <div className="flex items-center my-5">
+              <div className="flex-1 border-t border-gray-200"></div>
+              <span className="px-4 text-xs text-gray-400 font-medium uppercase tracking-wider">
+                Or
+              </span>
+              <div className="flex-1 border-t border-gray-200"></div>
+            </div>
+
+            <div className="flex gap-2 mb-4">
+              <input
+                type="url"
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleUrlSubmit()}
+                placeholder="Paste an article or Wikipedia link..."
+                className="flex-1 border border-gray-300 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <button
+                onClick={handleUrlSubmit}
+                className="px-4 py-2 bg-gray-800 text-white rounded-lg font-medium text-sm hover:bg-gray-900 transition-colors"
+              >
+                Save Link
+              </button>
+            </div>
+
+            {/* Status Panel */}
+            <div className="bg-gray-50 p-4 rounded-lg border border-gray-200 flex-1">
               <p className="font-medium text-sm text-gray-500 mb-2">
                 System Status:
               </p>
@@ -138,11 +181,6 @@ export default function Home() {
                   <p>
                     <strong>Category:</strong> {categoryInfo.category}
                   </p>
-                  {categoryInfo.subCategory && (
-                    <p>
-                      <strong>Sub-Category:</strong> {categoryInfo.subCategory}
-                    </p>
-                  )}
                   {categoryInfo.tags?.length > 0 && (
                     <p className="mt-1">
                       <strong>Tags:</strong>{" "}
@@ -154,7 +192,7 @@ export default function Home() {
                 </div>
               )}
 
-              {resourceId && (
+              {resourceId && status.includes("Fast upload complete") && (
                 <button
                   onClick={triggerDeepProcessing}
                   className="mt-4 w-full px-4 py-2 bg-purple-600 text-white rounded-lg font-medium hover:bg-purple-700 transition-colors"
@@ -165,11 +203,9 @@ export default function Home() {
             </div>
           </div>
 
-          {/* Right Column: AI Chat Interface */}
+          {/* AI Chat Area */}
           <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex flex-col h-[600px]">
             <h2 className="text-2xl font-semibold mb-4">Knowledge Assistant</h2>
-
-            {/* Chat Messages Area */}
             <div className="flex-1 bg-gray-50 rounded-lg p-4 mb-4 overflow-y-auto border border-gray-100 flex flex-col gap-3">
               {messages.length === 0 ? (
                 <p className="text-center text-gray-400 text-sm mt-20">
@@ -191,15 +227,13 @@ export default function Home() {
                 </div>
               )}
             </div>
-
-            {/* Chat Input */}
             <div className="flex gap-2">
               <input
                 type="text"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && handleSendMessage()}
-                placeholder="Ask about your documents..."
+                placeholder="Ask about your documents or links..."
                 className="flex-1 border border-gray-300 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
               />
               <button

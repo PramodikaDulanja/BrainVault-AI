@@ -53,6 +53,11 @@ class ChatRequest(BaseModel):
     query: str
     session_id: str = "default_session" # Added a session ID to track different users/chats
 
+
+
+class LinkRequest(BaseModel):
+    url: str
+
 # Configure the embedding model globally (this downloads a small model on first run)
 Settings.embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-small-en-v1.5")
 # Create the database tables in PostgreSQL
@@ -256,7 +261,102 @@ async def process_resource(resource_id: int, db: Session = Depends(get_db)):
         db.commit()
         return {"error": str(e)}
 
+
+
+
+
+@app.post("/api/resources/link")
+async def ingest_link(req: LinkRequest, db: Session = Depends(get_db)):
+    import requests
+    from bs4 import BeautifulSoup
     
+    # 1. Scrape the URL
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        response = requests.get(req.url, headers=headers, timeout=10)
+        soup = BeautifulSoup(response.content, "html.parser")
+        
+        title = soup.title.string.strip() if soup.title else req.url
+        
+        # Strip out navigation menus, scripts, and footers to isolate the core article
+        for element in soup(["script", "style", "nav", "footer", "header"]):
+            element.extract()
+            
+        text = soup.get_text(separator="\n")
+        clean_text = "\n".join(line.strip() for line in text.splitlines() if line.strip())
+        
+        if not clean_text:
+            return {"error": "No readable text found on this page."}
+            
+    except Exception as e:
+        return {"error": f"Failed to read URL: {str(e)}"}
+
+    # 2. Deep Categorization (Skipping the fast step since text extraction is instant)
+    deep_prompt = f"""
+    You are BrainVault AI. Read this web article and provide the most accurate classification.
+    Return strictly valid JSON:
+    {{
+        "primary_category": "Main Category",
+        "sub_category": "Sub Category",
+        "tags": ["tag1", "tag2", "tag3"]
+    }}
+    Text: {clean_text[:5000]}
+    """
+    
+    try:
+        raw_response = str(llm.complete(deep_prompt)).strip()
+        clean_response = raw_response.replace("```json", "").replace("```", "").strip()
+        ai_data = json.loads(clean_response)
+        
+        cat_name = ai_data.get("primary_category", "Web Article")
+        sub_cat = ai_data.get("sub_category", "")
+        tags = ai_data.get("tags", [])
+    except Exception as e:
+        print(f"Deep AI JSON Error: {e}")
+        cat_name, sub_cat, tags = "Web Article", "Uncategorized", []
+
+    # 3. Save to PostgreSQL
+    category = db.query(models.Category).filter(models.Category.name == cat_name).first()
+    if not category:
+        category = models.Category(name=cat_name, description=sub_cat)
+        db.add(category)
+        db.commit()
+        db.refresh(category)
+
+    resource = models.Resource(
+        title=title[:255], 
+        source_type="url", 
+        status="processed", # Marked processed instantly
+        category_id=category.id
+    )
+    db.add(resource)
+    db.commit()
+    db.refresh(resource)
+
+    # 4. Embed directly into Qdrant
+    doc = Document(text=clean_text, metadata={
+        "document_id": resource.id,
+        "source_name": req.url,
+        "category_name": category.name,
+        "tags": tags
+    })
+    
+    vector_store = QdrantVectorStore(client=qdrant_client, collection_name=COLLECTION_NAME)
+    storage_context = StorageContext.from_defaults(vector_store=vector_store)
+    VectorStoreIndex.from_documents([doc], storage_context=storage_context)
+
+    return {
+        "message": "Web link ingested and embedded successfully!",
+        "resource_id": resource.id,
+        "title": title,
+        "category": cat_name,
+        "tags": tags,
+        "status": "processed"
+    }
+
+
+
+
 
 chat_engines = {}
 
@@ -301,3 +401,27 @@ async def chat_with_brain(request: ChatRequest):
         
     except Exception as e:
         return {"error": str(e)}
+
+
+
+
+
+@app.get("/api/resources")
+def get_all_resources(db: Session = Depends(get_db)):
+    # Fetch all resources, newest first
+    resources = db.query(models.Resource).order_by(models.Resource.id.desc()).all()
+    
+    library = []
+    for res in resources:
+        # Get the matching category
+        category = db.query(models.Category).filter(models.Category.id == res.category_id).first()
+        
+        library.append({
+            "id": res.id,
+            "title": res.title,
+            "status": res.status,
+            "category": category.name if category else "Uncategorized",
+            "sub_category": category.description if category else ""
+        })
+        
+    return {"resources": library}
