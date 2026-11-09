@@ -19,10 +19,12 @@ def init_qdrant():
         qdrant_client.create_collection(
             collection_name=COLLECTION_NAME,
             # We are using 1024 as the vector size, standard for many embedding models
-            vectors_config=VectorParams(size=1024, distance=Distance.COSINE),
+            # vectors_config=VectorParams(size=1024, distance=Distance.COSINE),
+            vectors_config=VectorParams(size=384, distance=Distance.COSINE),
         )
         print(f"Created Qdrant collection: {COLLECTION_NAME}")
     else:
         print(f"Qdrant collection '{COLLECTION_NAME}' already exists.")
+
 
 init_qdrant()
