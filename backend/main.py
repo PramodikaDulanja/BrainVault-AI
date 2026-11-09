@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from dotenv import load_dotenv
 import os
 import shutil
-
+import json
 
 from llama_index.llms.groq import Groq
 import models
@@ -76,70 +76,177 @@ def test_llm():
     
 @app.post("/api/resources/upload")
 async def upload_pdf(file: UploadFile = File(...), db: Session = Depends(get_db)):
-    # 1. Automatically create the folder if it doesn't exist
     os.makedirs("uploads", exist_ok=True)
-    
-    # 2. Save the file to the local uploads directory
     file_location = f"uploads/{file.filename}"
+    
     with open(file_location, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
         
+    # 1. Read just enough to categorize
+    reader = PdfReader(file_location)
+    full_text = "\n".join([page.extract_text() for page in reader.pages if page.extract_text()])
+    
+    if len(full_text) > 3000:
+        sample_text = f"{full_text[:1000]}\n...\n{full_text[len(full_text)//2 - 500 : len(full_text)//2 + 500]}\n...\n{full_text[-1000:]}"
+    else:
+        sample_text = full_text
+
+    # 2. Ask Groq to categorize
+    prompt = f"""
+    Analyze this text sample. Return strictly valid JSON:
+    {{"title": "Doc Title", "topics": ["t1", "t2"], "category": "Category Name", "description": "Short summary"}}
+    Text: {sample_text}
+    """
+    
+    try:
+        ai_data = json.loads(str(llm.complete(prompt)).strip())
+        cat_name = ai_data.get("category", "Uncategorized")
+        cat_desc = ai_data.get("description", "Auto-categorized by AI")
+    except Exception as e:
+        print(f"AI JSON Error: {e}")
+        ai_data = {} # <-- FIX: Initialize an empty dictionary if the AI fails
+        cat_name, cat_desc = "Uncategorized", "Could not parse AI response"
+
+    category = db.query(models.Category).filter(models.Category.name == cat_name).first()
+    if not category:
+        category = models.Category(name=cat_name, description=cat_desc)
+        db.add(category)
+        db.commit()
+        db.refresh(category)
+        
+    # 3. Save to PostgreSQL as 'pending_processing'
     new_resource = models.Resource(
-        title=file.filename, 
+        title=ai_data.get("title", file.filename), 
         source_type="pdf", 
-        status="processing"
+        status="pending_processing",
+        category_id=category.id
     )
     db.add(new_resource)
     db.commit()
     db.refresh(new_resource)
     
-    try:
-        documents = []
-        reader = PdfReader(file_location)
-        
-        for i, page in enumerate(reader.pages):
-            text = page.extract_text()
-            
-            if not text or len(text.strip()) < 20 or "\x00" in text:
-                print(f"Page {i+1} is unreadable. Triggering OCR...")
-                
-                # 2. Pass the dynamic POPPLER_PATH here
-                images = convert_from_path(
-                    file_location, 
-                    first_page=i+1, 
-                    last_page=i+1, 
-                    poppler_path=POPPLER_PATH
-                )
-                text = pytesseract.image_to_string(images[0])
-            
-            documents.append(Document(text=text, metadata={"page": i+1, "file": file.filename}))
-
-
-        # 4. Set up Qdrant connection
-        vector_store = QdrantVectorStore(client=qdrant_client, collection_name=COLLECTION_NAME)
-        storage_context = StorageContext.from_defaults(vector_store=vector_store)
-        
-        # 5. Chunk the text, generate embeddings, and save
-        index = VectorStoreIndex.from_documents(
-            documents, 
-            storage_context=storage_context
-        )
-        
-        new_resource.status = "processed"
-        db.commit()
-        
-    except Exception as e:
-        new_resource.status = "failed"
-        db.commit()
-        return {"error": str(e)}
-        
     return {
-        "message": f"'{file.filename}' uploaded successfully!", 
+        "message": "File uploaded and categorized instantly.", 
         "resource_id": new_resource.id, 
+        "category": cat_name,
         "status": new_resource.status
     }
 
 
+
+@app.post("/api/resources/{resource_id}/process")
+async def process_resource(resource_id: int, db: Session = Depends(get_db)):
+    # 1. Find the resource in PostgreSQL
+    resource = db.query(models.Resource).filter(models.Resource.id == resource_id).first()
+    if not resource:
+        raise HTTPException(status_code=404, detail="Resource not found")
+        
+    file_location = f"uploads/{resource.title}"
+    
+    try:
+        documents = []
+        reader = PdfReader(file_location)
+        
+        # 2. The heavy Hybrid OCR loop (gets the CLEAN text)
+        for i, page in enumerate(reader.pages):
+            text = page.extract_text()
+            if not text or len(text.strip()) < 20 or "\x00" in text:
+                images = convert_from_path(file_location, first_page=i+1, last_page=i+1, poppler_path=POPPLER_PATH)
+                text = pytesseract.image_to_string(images[0])
+            
+            documents.append(Document(text=text, metadata={"page_number": i+1, "document_id": resource.id}))
+
+        # 3. DEEP CATEGORIZATION VERIFICATION
+        print("Running deep categorization to verify/update categories...")
+        full_clean_text = "\n".join([doc.text for doc in documents])
+        
+        # Give the AI a much richer sample now that we have OCR'd the whole document
+        if len(full_clean_text) > 10000:
+            deep_sample = f"{full_clean_text[:5000]}\n...\n{full_clean_text[-5000:]}"
+        else:
+            deep_sample = full_clean_text
+            
+        deep_prompt = f"""
+        You are BrainVault AI's deep knowledge organizer.
+        Read this fully extracted, clean text and provide the absolute most accurate classification.
+        Return strictly valid JSON:
+        {{
+            "primary_category": "Main Category",
+            "sub_category": "Sub Category",
+            "tags": ["tag1", "tag2", "tag3"]
+        }}
+        Text: {deep_sample}
+        """
+        
+        try:
+            # 1. Get the raw string from the AI
+            raw_response = str(llm.complete(deep_prompt)).strip()
+            
+            # 2. Print it to the terminal so we can debug what the AI is actually saying
+            print(f"\n--- RAW AI RESPONSE ---\n{raw_response}\n-----------------------\n")
+            
+            # 3. Strip out markdown code blocks if the AI added them
+            clean_response = raw_response.replace("```json", "").replace("```", "").strip()
+            
+            # 4. Parse the clean JSON
+            deep_ai_data = json.loads(clean_response)
+            
+            final_cat_name = deep_ai_data.get("primary_category", "Uncategorized")
+            final_sub_cat = deep_ai_data.get("sub_category", "")
+            final_tags = deep_ai_data.get("tags", [])
+        except Exception as e:
+            print(f"Deep AI JSON Error: {e}")
+            final_cat_name, final_sub_cat, final_tags = None, None, []
+            
+        # 4. Correct the Database if necessary
+        # First, default to the category we already assigned in the fast upload step
+        category = db.query(models.Category).filter(models.Category.id == resource.category_id).first()
+        
+        # If the Deep AI successfully found a better category, update it
+        if final_cat_name and final_cat_name != "Uncategorized":
+            new_category = db.query(models.Category).filter(models.Category.name == final_cat_name).first()
+            if not new_category:
+                print(f"Deep Analysis created a more accurate category: {final_cat_name}")
+                new_category = models.Category(name=final_cat_name, description=final_sub_cat)
+                db.add(new_category)
+                db.commit()
+                db.refresh(new_category)
+            
+            # Override our default category with the new AI category
+            category = new_category
+            resource.category_id = category.id
+            db.commit()
+
+        # 5. Embed the verified metadata into every chunk for perfect Qdrant retrieval
+        for doc in documents:
+            doc.metadata["category_name"] = category.name if category else "Uncategorized"
+            doc.metadata["sub_category"] = final_sub_cat
+            doc.metadata["tags"] = final_tags
+            doc.metadata["source_name"] = resource.title
+
+        # 6. Generate embeddings and save to Qdrant
+        vector_store = QdrantVectorStore(client=qdrant_client, collection_name=COLLECTION_NAME)
+        storage_context = StorageContext.from_defaults(vector_store=vector_store)
+        index = VectorStoreIndex.from_documents(documents, storage_context=storage_context)
+        
+        # 7. Mark as complete
+        resource.status = "processed"
+        db.commit()
+        
+        return {
+            "message": "Advanced extraction and deep categorization complete", 
+            "verified_category": category.name if category else "Uncategorized",
+            "sub_category": final_sub_cat,
+            "tags": final_tags,
+            "status": resource.status
+        }
+        
+    except Exception as e:
+        resource.status = "failed"
+        db.commit()
+        return {"error": str(e)}
+
+    
 
 chat_engines = {}
 
