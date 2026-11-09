@@ -76,6 +76,10 @@ def test_llm():
     
 @app.post("/api/resources/upload")
 async def upload_pdf(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    # 1. Automatically create the folder if it doesn't exist
+    os.makedirs("uploads", exist_ok=True)
+    
+    # 2. Save the file to the local uploads directory
     file_location = f"uploads/{file.filename}"
     with open(file_location, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)

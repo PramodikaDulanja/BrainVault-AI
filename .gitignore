@@ -11,3 +11,11 @@ frontend/.env*
 
 # OS Files
 .DS_Store
+
+# Ignore uploaded user files
+backend/uploads/
+
+
+# Ignore database files
+qdrant_data/
+postgres_data/
