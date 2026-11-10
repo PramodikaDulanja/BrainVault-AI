@@ -1,10 +1,11 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import Navbar from "@/components/Navbar"; // Imports your new Navbar
+import Sidebar from "@/components/Sidebar";
+// import Navbar from "@/components/Navbar";
 
 export const metadata: Metadata = {
   title: "BrainVault AI",
-  description: "Your Personal Second Brain & Smart Inbox",
+  description: "Your Personal Second Brain",
 };
 
 export default function RootLayout({
@@ -14,12 +15,12 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className="bg-gray-50 text-gray-900 font-sans min-h-screen">
-        {/* The global Navbar stays at the top of every page */}
-        <Navbar />
+      <body className="flex h-screen bg-[#151923] text-gray-100 font-sans overflow-hidden">
+        {/* Left Sidebar stays fixed */}
+        <Sidebar />
 
-        {/* The active page content renders here */}
-        {children}
+        {/* Main page content area */}
+        <main className="flex-1 overflow-y-auto">{children}</main>
       </body>
     </html>
   );

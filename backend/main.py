@@ -425,3 +425,111 @@ def get_all_resources(db: Session = Depends(get_db)):
         })
         
     return {"resources": library}
+
+
+
+
+@app.post("/api/resources/image")
+async def upload_image(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    from PIL import Image
+    
+    os.makedirs("uploads", exist_ok=True)
+    file_location = f"uploads/{file.filename}"
+    
+    with open(file_location, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+        
+    # 1. Use our existing Tesseract OCR to read the image text
+    try:
+        img = Image.open(file_location)
+        extracted_text = pytesseract.image_to_string(img)
+        
+        if not extracted_text or len(extracted_text.strip()) < 5:
+            return {"error": "No readable text found in this image."}
+            
+    except Exception as e:
+        return {"error": f"OCR Engine failed to read image: {str(e)}"}
+        
+    # 2. Categorize using the EXACT SAME model setup used for PDFs
+    deep_prompt = f"""
+    You are BrainVault AI. Read this extracted image text and provide the most accurate classification.
+    Return strictly valid JSON:
+    {{
+        "primary_category": "Main Category",
+        "sub_category": "Sub Category",
+        "tags": ["tag1", "tag2", "tag3"]
+    }}
+    Text: {extracted_text[:4000]}
+    """
+    
+    try:
+        raw_response = str(llm.complete(deep_prompt)).strip()
+        clean_response = raw_response.replace("```json", "").replace("```", "").strip()
+        ai_data = json.loads(clean_response)
+        
+        cat_name = ai_data.get("primary_category", "Image Asset")
+        sub_cat = ai_data.get("sub_category", "")
+        tags = ai_data.get("tags", [])
+    except Exception as e:
+        print(f"AI JSON Error: {e}")
+        cat_name, sub_cat, tags = "Image Asset", "Uncategorized", []
+
+    # 3. Save to Database
+    category = db.query(models.Category).filter(models.Category.name == cat_name).first()
+    if not category:
+        category = models.Category(name=cat_name, description=sub_cat)
+        db.add(category)
+        db.commit()
+        db.refresh(category)
+
+    resource = models.Resource(
+        title=file.filename[:255], 
+        source_type="image", 
+        status="processed", 
+        category_id=category.id
+    )
+    db.add(resource)
+    db.commit()
+    db.refresh(resource)
+
+    # 4. Embed the extracted text to Qdrant
+    doc = Document(text=extracted_text, metadata={
+        "document_id": resource.id,
+        "source_name": file.filename,
+        "category_name": category.name,
+        "tags": tags
+    })
+    
+    vector_store = QdrantVectorStore(client=qdrant_client, collection_name=COLLECTION_NAME)
+    storage_context = StorageContext.from_defaults(vector_store=vector_store)
+    VectorStoreIndex.from_documents([doc], storage_context=storage_context)
+
+    return {
+        "message": "Image OCR analyzed and embedded successfully!",
+        "resource_id": resource.id,
+        "title": file.filename,
+        "category": cat_name,
+        "tags": tags,
+        "status": "processed"
+    }
+
+
+
+
+@app.get("/api/stats")
+def get_system_stats(db: Session = Depends(get_db)):
+    # 1. Count Resources and Categories in PostgreSQL
+    resource_count = db.query(models.Resource).count()
+    category_count = db.query(models.Category).count()
+    
+    # 2. Count indexed chunks directly from Qdrant Vector DB
+    try:
+        chunk_count = qdrant_client.count(collection_name=COLLECTION_NAME).count
+    except Exception:
+        chunk_count = 0
+        
+    return {
+        "resources": resource_count,
+        "categories": category_count,
+        "chunks": chunk_count
+    }
