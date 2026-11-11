@@ -1,30 +1,36 @@
-# 🧠 BrainVault AI
+# BrainVault AI
 
 > **Your Personal Enterprise-Grade Second Brain & Multi-Source Knowledge Assistant**
 
-BrainVault AI is a full-stack, AI-powered knowledge management system designed to ingest, categorize, index, and retrieve information from multiple sources (PDFs, Web URLs, and Images). Built with a modern hybrid OCR and vector search pipeline, it allows you to chat directly with your personal knowledge base using advanced LLM reasoning.
+BrainVault AI is a full-stack, AI-powered knowledge management system designed to ingest, categorize, index, and retrieve information from multiple sources, including PDFs, Web URLs, and Images.
+
+Built with a modern hybrid OCR and vector search pipeline, it allows you to chat directly with your personal knowledge base using advanced LLM reasoning.
 
 ---
 
-## 🚀 Key Features
+## Key Features
 
-- **Multi-Source Ingestion Pipeline:**
-  - **PDF Documents:** Two-tier processing with fast metadata extraction and deep hybrid OCR (`PyTesseract` + `Poppler`).
-  - **Web Articles:** Automated live HTML scraping (`BeautifulSoup` + `Requests`) to clean and index web content.
-  - **Images & Diagrams:** Optical Character Recognition to extract text and analyze visual assets.
-- **Intelligent Auto-Categorization:** Leverages Groq LLMs to automatically assign primary categories, sub-categories, and smart tags to all ingested files.
-- **Vector Search & Storage:** Powered by **Qdrant** vector database and HuggingFace embeddings (`BAAI/bge-small-en-v1.5`) for semantic similarity search.
+- **Multi-Source Ingestion Pipeline**
+  - **PDF Documents:** Two-tier processing with fast metadata extraction and deep hybrid OCR using `PyTesseract` and `Poppler`.
+  - **Web Articles:** Automated live HTML scraping using `BeautifulSoup` and `Requests` to clean and index web content.
+  - **Images & Diagrams:** Optical Character Recognition (OCR) to extract text and analyze visual assets.
+
+- **Intelligent Auto-Categorization:** Leverages Groq LLMs to automatically assign primary categories, subcategories, and smart tags to all ingested files.
+
+- **Vector Search & Storage:** Powered by the Qdrant vector database and HuggingFace embeddings (`BAAI/bge-small-en-v1.5`) for semantic similarity search.
+
 - **Conversational AI Assistant:** Context-aware chat engine with token-limited memory buffers and multi-session tracking.
+
 - **Professional Next.js Frontend:** A sleek, dark-mode dashboard featuring a persistent sidebar, live system statistics, a dedicated Knowledge Library browser, and a ChatGPT-style conversational workspace.
 
 ---
 
-## 🛠️ Tech Stack
+## Tech Stack
 
 ### Backend
 
 - **Framework:** FastAPI (Python)
-- **Database (Relational):** PostgreSQL (Managed via SQLAlchemy)
+- **Relational Database:** PostgreSQL (Managed via SQLAlchemy)
 - **Vector Database:** Qdrant
 - **AI & LLM Inference:** Groq API, LlamaIndex
 - **Processing & OCR:** PyTesseract, pdf2image, BeautifulSoup4, Requests
@@ -37,11 +43,7 @@ BrainVault AI is a full-stack, AI-powered knowledge management system designed t
 
 ---
 
-d
-
----
-
-## ⚙️ Getting Started & Installation
+## Getting Started & Installation
 
 ### Prerequisites
 
@@ -49,7 +51,7 @@ d
 - Node.js 18+
 - PostgreSQL installed and running locally
 - Qdrant instance (Local or Cloud)
-- Tesseract OCR & Poppler binaries installed on your system (for PDF/Image OCR)
+- Tesseract OCR and Poppler binaries installed on your system (for PDF/Image OCR)
 
 ### 1. Backend Setup (FastAPI & PostgreSQL)
 
@@ -121,4 +123,4 @@ Run the development server:
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) in your browser to view the application.
+Open [http://localhost:3000](http://localhost:3000) in your browser to access the application.
