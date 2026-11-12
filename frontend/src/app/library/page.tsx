@@ -1,11 +1,22 @@
 "use client";
 import { useState, useEffect } from "react";
-import { Folder, FileText, CheckCircle2, Clock, Search } from "lucide-react";
+import {
+  Folder,
+  FileText,
+  CheckCircle2,
+  Clock,
+  Search,
+  Trash2,
+  Loader2,
+  X,
+} from "lucide-react";
 
 export default function Library() {
   const [libraryFiles, setLibraryFiles] = useState<any[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
   const [isLoading, setIsLoading] = useState(true);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
 
   useEffect(() => {
     const fetchLibrary = async () => {
@@ -21,6 +32,28 @@ export default function Library() {
     };
     fetchLibrary();
   }, []);
+
+  const handleDelete = async (id: number) => {
+    setDeletingId(id);
+    try {
+      const res = await fetch(`http://127.0.0.1:8000/api/resources/${id}`, {
+        method: "DELETE",
+      });
+
+      if (!res.ok) {
+        throw new Error("Failed to delete resource");
+      }
+
+      // Immediately remove the deleted item from UI state
+      setLibraryFiles((prev) => prev.filter((file) => file.id !== id));
+      setConfirmDeleteId(null);
+    } catch (error) {
+      console.error("Error deleting resource:", error);
+      alert("Failed to delete resource. Check that your backend is running.");
+    } finally {
+      setDeletingId(null);
+    }
+  };
 
   // Filter files based on search input
   const filteredFiles = libraryFiles.filter(
@@ -84,26 +117,61 @@ export default function Library() {
                 key={file.id}
                 className="bg-[#0f111a] border border-gray-800 rounded-xl p-5 hover:border-purple-500/40 transition-all flex flex-col justify-between relative group"
               >
-                {/* Status Badge */}
-                <div className="absolute top-4 right-4">
-                  {file.status === "processed" ? (
-                    <span className="flex items-center gap-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-1 text-[10px] font-semibold rounded-md">
-                      <CheckCircle2 className="w-3 h-3" /> Embedded
-                    </span>
-                  ) : (
-                    <span className="flex items-center gap-1 bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2 py-1 text-[10px] font-semibold rounded-md">
-                      <Clock className="w-3 h-3" /> Pending AI
-                    </span>
-                  )}
-                </div>
-
+                {/* Top Row: File Icon + Status & Delete Controls */}
                 <div>
-                  <div className="bg-[#1b212f] p-2.5 rounded-lg w-fit mb-3">
-                    <FileText className="w-5 h-5 text-purple-400" />
+                  <div className="flex items-start justify-between gap-2 mb-3">
+                    <div className="bg-[#1b212f] p-2.5 rounded-lg w-fit">
+                      <FileText className="w-5 h-5 text-purple-400" />
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      {file.status === "processed" ? (
+                        <span className="flex items-center gap-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-1 text-[10px] font-semibold rounded-md">
+                          <CheckCircle2 className="w-3 h-3" /> Embedded
+                        </span>
+                      ) : (
+                        <span className="flex items-center gap-1 bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2 py-1 text-[10px] font-semibold rounded-md">
+                          <Clock className="w-3 h-3" /> Pending AI
+                        </span>
+                      )}
+
+                      {/* Two-Step Delete Action */}
+                      {confirmDeleteId === file.id ? (
+                        <div className="flex items-center gap-1 bg-red-500/10 border border-red-500/30 rounded-md px-1.5 py-0.5">
+                          <button
+                            onClick={() => handleDelete(file.id)}
+                            disabled={deletingId === file.id}
+                            className="text-[10px] font-bold text-red-400 hover:text-red-300 px-1 flex items-center gap-1"
+                          >
+                            {deletingId === file.id ? (
+                              <Loader2 className="w-3 h-3 animate-spin" />
+                            ) : (
+                              "Confirm"
+                            )}
+                          </button>
+                          <button
+                            onClick={() => setConfirmDeleteId(null)}
+                            disabled={deletingId === file.id}
+                            className="text-gray-400 hover:text-white p-0.5"
+                            title="Cancel"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => setConfirmDeleteId(file.id)}
+                          className="p-1.5 rounded-md text-gray-500 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                          title="Delete resource"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
                   </div>
 
                   <h3
-                    className="font-semibold text-base text-white mb-1 pr-16 truncate"
+                    className="font-semibold text-base text-white mb-1 truncate"
                     title={file.title}
                   >
                     {file.title}

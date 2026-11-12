@@ -25,6 +25,9 @@ import platform
 
 from llama_index.core.memory import ChatMemoryBuffer
 
+from fastapi import HTTPException
+from qdrant_client.http import models as qdrant_models
+
 app = FastAPI(title="BrainVault AI Backend")
 
 # allow Next.js to connect
@@ -425,6 +428,50 @@ def get_all_resources(db: Session = Depends(get_db)):
         })
         
     return {"resources": library}
+
+
+
+
+@app.delete("/api/resources/{resource_id}")
+def delete_resource(resource_id: int, db: Session = Depends(get_db)):
+    # 1. Find the resource in PostgreSQL
+    resource = db.query(models.Resource).filter(models.Resource.id == resource_id).first()
+    if not resource:
+        raise HTTPException(status_code=404, detail="Resource not found")
+
+    # 2. Delete matching vector chunks from Qdrant
+    try:
+        qdrant_client.delete(
+            collection_name=COLLECTION_NAME,
+            points_selector=qdrant_models.FilterSelector(
+                filter=qdrant_models.Filter(
+                    must=[
+                        qdrant_models.FieldCondition(
+                            key="document_id",
+                            match=qdrant_models.MatchValue(value=resource_id),
+                        )
+                    ]
+                )
+            ),
+        )
+    except Exception as e:
+        print(f"Warning: Qdrant vector cleanup failed for resource {resource_id}: {e}")
+
+    # 3. Remove the local file if it was an uploaded PDF or Image
+    if resource.source_type in ["pdf", "image"]:
+        file_path = os.path.join("uploads", resource.title)
+        if os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except Exception as e:
+                print(f"Warning: Could not delete local file {file_path}: {e}")
+
+    # 4. Delete the record from PostgreSQL
+    db.delete(resource)
+    db.commit()
+
+    return {"message": f"Resource '{resource.title}' deleted successfully", "id": resource_id}
+
 
 
 
