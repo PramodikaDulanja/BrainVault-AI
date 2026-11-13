@@ -28,6 +28,10 @@ from llama_index.core.memory import ChatMemoryBuffer
 from fastapi import HTTPException
 from qdrant_client.http import models as qdrant_models
 
+from datetime import datetime, timezone
+from llama_index.core.llms import ChatMessage as LlamaChatMessage, MessageRole
+
+
 app = FastAPI(title="BrainVault AI Backend")
 
 # allow Next.js to connect
@@ -364,47 +368,128 @@ async def ingest_link(req: LinkRequest, db: Session = Depends(get_db)):
 chat_engines = {}
 
 @app.post("/api/chat")
-async def chat_with_brain(request: ChatRequest):
+async def chat_with_brain(request: ChatRequest, db: Session = Depends(get_db)):
     try:
-        # 1. Check if this session already has an active memory
+        # 1. Ensure the chat session exists in PostgreSQL
+        session = db.query(models.ChatSession).filter(models.ChatSession.id == request.session_id).first()
+        short_title = request.query.strip()[:45] + ("..." if len(request.query.strip()) > 45 else "")
+
+        if not session:
+            session = models.ChatSession(id=request.session_id, title=short_title or "New Chat")
+            db.add(session)
+            db.commit()
+            db.refresh(session)
+        elif session.title in ["New Chat", "New Chat Session"]:
+            session.title = short_title or session.title
+            db.commit()
+
+        # 2. Initialize or rehydrate LlamaIndex ChatEngine memory for this session
         if request.session_id not in chat_engines:
-            print(f"Starting new conversation memory for: {request.session_id}")
             vector_store = QdrantVectorStore(client=qdrant_client, collection_name=COLLECTION_NAME)
             index = VectorStoreIndex.from_vector_store(vector_store=vector_store)
-            
-            # Create a memory buffer to remember recent messages (limit to 1500 tokens to save context window)
-            memory = ChatMemoryBuffer.from_defaults(token_limit=1500)
-            
-            # Upgrade from 'query_engine' to 'chat_engine'
+
+            # Rehydrate prior messages from PostgreSQL in case the backend restarted
+            past_messages = (
+                db.query(models.ChatMessage)
+                .filter(models.ChatMessage.session_id == request.session_id)
+                .order_by(models.ChatMessage.id.asc())
+                .all()
+            )
+            chat_history = [
+                LlamaChatMessage(
+                    role=MessageRole.USER if m.role == "user" else MessageRole.ASSISTANT,
+                    content=m.content,
+                )
+                for m in past_messages
+            ]
+
+            memory = ChatMemoryBuffer.from_defaults(token_limit=1500, chat_history=chat_history)
             chat_engines[request.session_id] = index.as_chat_engine(
                 chat_mode="context",
                 memory=memory,
                 llm=llm,
                 similarity_top_k=5,
-                system_prompt="You are BrainVault AI, a helpful personal assistant. Answer questions based on the provided document context."
+                system_prompt="You are BrainVault AI, a helpful personal assistant. Answer questions based on the provided document context.",
             )
-        
-        # 2. Retrieve the AI engine with this session's memory
+
+        # 3. Save the user's message to PostgreSQL
+        user_record = models.ChatMessage(
+            session_id=request.session_id,
+            role="user",
+            content=request.query,
+        )
+        db.add(user_record)
+        db.commit()
+
+        # 4. Generate AI response using conversational context
         engine = chat_engines[request.session_id]
-        
-        # 3. Use .chat() instead of .query() to continue the conversation
         response = engine.chat(request.query)
-        
-        # (Optional Debug: Print what the AI read from the documents)
-        print("\n=== WHAT THE AI READ ===")
-        for i, node in enumerate(response.source_nodes):
-            print(f"--- Chunk {i+1} ---")
-            print(node.text[:200] + "...\n") 
-        print("========================\n")
-        
+        ai_text = str(response)
+
+        # 5. Save the AI's response and bump session timestamp
+        ai_record = models.ChatMessage(
+            session_id=request.session_id,
+            role="ai",
+            content=ai_text,
+        )
+        db.add(ai_record)
+        session.updated_at = datetime.now(timezone.utc)
+        db.commit()
+
         return {
-            "answer": str(response), 
-            "session_id": request.session_id
+            "answer": ai_text,
+            "session_id": request.session_id,
+            "session_title": session.title,
         }
-        
+
     except Exception as e:
         return {"error": str(e)}
 
+
+@app.get("/api/chat/sessions")
+def get_chat_sessions(db: Session = Depends(get_db)):
+    sessions = (
+        db.query(models.ChatSession)
+        .order_by(models.ChatSession.updated_at.desc())
+        .all()
+    )
+    return {
+        "sessions": [
+            {"id": s.id, "title": s.title, "updated_at": s.updated_at}
+            for s in sessions
+        ]
+    }
+
+
+@app.get("/api/chat/sessions/{session_id}")
+def get_chat_history(session_id: str, db: Session = Depends(get_db)):
+    messages = (
+        db.query(models.ChatMessage)
+        .filter(models.ChatMessage.session_id == session_id)
+        .order_by(models.ChatMessage.id.asc())
+        .all()
+    )
+    return {
+        "session_id": session_id,
+        "messages": [
+            {"id": m.id, "role": m.role, "content": m.content}
+            for m in messages
+        ],
+    }
+
+
+@app.delete("/api/chat/sessions/{session_id}")
+def delete_chat_session(session_id: str, db: Session = Depends(get_db)):
+    session = db.query(models.ChatSession).filter(models.ChatSession.id == session_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Chat session not found")
+
+    db.query(models.ChatMessage).filter(models.ChatMessage.session_id == session_id).delete()
+    db.delete(session)
+    db.commit()
+
+    chat_engines.pop(session_id, None)
+    return {"message": "Chat session deleted", "session_id": session_id}
 
 
 

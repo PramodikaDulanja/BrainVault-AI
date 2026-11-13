@@ -1,20 +1,31 @@
 "use client";
-import { useState, useRef, useEffect } from "react";
-import { Send, Plus, MessageSquare, Bot, User } from "lucide-react";
+import { useState, useRef, useEffect, Suspense } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
+import { Send, Plus, MessageSquare, Bot, User, Trash2 } from "lucide-react";
 
-export default function AIChat() {
-  const [sessions, setSessions] = useState([
-    { id: "default_session", name: "General Knowledge Chat" },
-    { id: "session_2", name: "Architecture & Notes" },
-  ]);
-  const [currentSession, setCurrentSession] = useState("default_session");
+interface ChatSession {
+  id: string;
+  title: string;
+}
+
+interface Message {
+  role: string;
+  content: string;
+}
+
+function ChatWorkspace() {
+  const searchParams = useSearchParams();
+  const router = useRouter();
+
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [currentSession, setCurrentSession] =
+    useState<string>("default_session");
   const [query, setQuery] = useState("");
-  const [messages, setMessages] = useState<{ role: string; content: string }[]>(
-    [],
-  );
+  const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const initialQueryHandled = useRef(false);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -24,30 +35,78 @@ export default function AIChat() {
     scrollToBottom();
   }, [messages]);
 
-  const handleSendMessage = async () => {
-    if (!query.trim()) return;
+  // Fetch all persisted sessions from PostgreSQL
+  const fetchSessions = async () => {
+    try {
+      const res = await fetch("http://127.0.0.1:8000/api/chat/sessions");
+      const data = await res.json();
+      if (data.sessions) {
+        setSessions(data.sessions);
+        return data.sessions as ChatSession[];
+      }
+    } catch (error) {
+      console.error("Failed to load chat sessions:", error);
+    }
+    return [];
+  };
 
-    const userMsg = query;
-    const newMessages = [...messages, { role: "user", content: userMsg }];
-    setMessages(newMessages);
+  // Load messages for a specific session
+  const loadSessionMessages = async (sessionId: string) => {
+    setCurrentSession(sessionId);
+    try {
+      const res = await fetch(
+        `http://127.0.0.1:8000/api/chat/sessions/${sessionId}`,
+      );
+      const data = await res.json();
+      setMessages(data.messages || []);
+    } catch (error) {
+      console.error("Failed to load session history:", error);
+    }
+  };
+
+  // Send a message (supports both manual input and Dashboard auto-query)
+  const sendMessage = async (textToSend: string, targetSessionId: string) => {
+    if (!textToSend.trim()) return;
+
+    const userMsg = textToSend.trim();
+    setMessages((prev) => [...prev, { role: "user", content: userMsg }]);
     setQuery("");
     setIsLoading(true);
+
+    // Ensure session appears immediately in sidebar
+    setSessions((prev) => {
+      const exists = prev.some((s) => s.id === targetSessionId);
+      const previewTitle =
+        userMsg.slice(0, 45) + (userMsg.length > 45 ? "..." : "");
+      if (!exists) {
+        return [{ id: targetSessionId, title: previewTitle }, ...prev];
+      }
+      return prev.map((s) =>
+        s.id === targetSessionId && s.title === "New Chat"
+          ? { ...s, title: previewTitle }
+          : s,
+      );
+    });
 
     try {
       const res = await fetch("http://127.0.0.1:8000/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: userMsg, session_id: currentSession }),
+        body: JSON.stringify({ query: userMsg, session_id: targetSessionId }),
       });
       const data = await res.json();
 
-      setMessages([
-        ...newMessages,
-        { role: "ai", content: data.answer || data.error },
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "ai",
+          content: data.answer || data.error || "No response received.",
+        },
       ]);
+      await fetchSessions();
     } catch (error) {
-      setMessages([
-        ...newMessages,
+      setMessages((prev) => [
+        ...prev,
         { role: "ai", content: "Error connecting to BrainVault backend." },
       ]);
     } finally {
@@ -55,11 +114,59 @@ export default function AIChat() {
     }
   };
 
+  // On initial mount: handle Dashboard ?q= redirect OR load most recent session
+  useEffect(() => {
+    const initChat = async () => {
+      const incomingQuery = searchParams.get("q");
+      const existingSessions = await fetchSessions();
+
+      if (incomingQuery && !initialQueryHandled.current) {
+        initialQueryHandled.current = true;
+        const freshSessionId = `session_${Date.now()}`;
+        setCurrentSession(freshSessionId);
+        setMessages([]);
+        router.replace("/chat");
+        await sendMessage(incomingQuery, freshSessionId);
+      } else if (existingSessions.length > 0 && !incomingQuery) {
+        await loadSessionMessages(existingSessions[0].id);
+      } else {
+        const defaultId = `session_${Date.now()}`;
+        setCurrentSession(defaultId);
+      }
+    };
+
+    initChat();
+  }, []);
+
   const createNewChat = () => {
     const newId = `session_${Date.now()}`;
-    setSessions([...sessions, { id: newId, name: `New Chat Session` }]);
+    setSessions((prev) => [{ id: newId, title: "New Chat" }, ...prev]);
     setCurrentSession(newId);
     setMessages([]);
+  };
+
+  const handleDeleteSession = async (
+    e: React.MouseEvent,
+    sessionId: string,
+  ) => {
+    e.stopPropagation();
+    try {
+      await fetch(`http://127.0.0.1:8000/api/chat/sessions/${sessionId}`, {
+        method: "DELETE",
+      });
+      const remaining = sessions.filter((s) => s.id !== sessionId);
+      setSessions(remaining);
+
+      if (currentSession === sessionId) {
+        if (remaining.length > 0) {
+          await loadSessionMessages(remaining[0].id);
+        } else {
+          createNewChat();
+        }
+      }
+    } catch (error) {
+      console.error("Failed to delete chat session:", error);
+    }
   };
 
   return (
@@ -74,24 +181,40 @@ export default function AIChat() {
         </button>
 
         <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3 px-2">
-          Recent Chats
+          Saved Chats ({sessions.length})
         </p>
 
         <div className="flex-1 space-y-1 overflow-y-auto">
-          {sessions.map((sess) => (
-            <button
-              key={sess.id}
-              onClick={() => setCurrentSession(sess.id)}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm transition-colors ${
-                currentSession === sess.id
-                  ? "bg-[#1e2333] text-white font-medium"
-                  : "text-gray-400 hover:text-gray-200 hover:bg-[#151923]"
-              }`}
-            >
-              <MessageSquare className="w-4 h-4 text-purple-400" />
-              <span className="truncate">{sess.name}</span>
-            </button>
-          ))}
+          {sessions.length === 0 ? (
+            <p className="text-xs text-gray-500 px-2 py-4">
+              No saved conversations yet.
+            </p>
+          ) : (
+            sessions.map((sess) => (
+              <div
+                key={sess.id}
+                onClick={() => loadSessionMessages(sess.id)}
+                className={`group w-full flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl text-sm cursor-pointer transition-colors ${
+                  currentSession === sess.id
+                    ? "bg-[#1e2333] text-white font-medium"
+                    : "text-gray-400 hover:text-gray-200 hover:bg-[#151923]"
+                }`}
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <MessageSquare className="w-4 h-4 text-purple-400 shrink-0" />
+                  <span className="truncate">{sess.title}</span>
+                </div>
+
+                <button
+                  onClick={(e) => handleDeleteSession(e, sess.id)}
+                  className="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-red-400 p-1 rounded transition-opacity"
+                  title="Delete chat"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            ))
+          )}
         </div>
       </aside>
 
@@ -121,16 +244,18 @@ export default function AIChat() {
             messages.map((msg, idx) => (
               <div
                 key={idx}
-                className={`flex items-start gap-4 max-w-3xl mx-auto w-full ${msg.role === "user" ? "justify-end" : "justify-start"}`}
+                className={`flex items-start gap-4 max-w-3xl mx-auto w-full ${
+                  msg.role === "user" ? "justify-end" : "justify-start"
+                }`}
               >
                 {msg.role === "ai" && (
-                  <div className="bg-[#8b5cf6] p-2 rounded-xl text-white mt-1">
+                  <div className="bg-[#8b5cf6] p-2 rounded-xl text-white mt-1 shrink-0">
                     <Bot className="w-4 h-4" />
                   </div>
                 )}
 
                 <div
-                  className={`p-4 rounded-2xl text-sm leading-relaxed ${
+                  className={`p-4 rounded-2xl text-sm leading-relaxed whitespace-pre-wrap ${
                     msg.role === "user"
                       ? "bg-[#2563eb] text-white rounded-br-xs"
                       : "bg-[#1b212f] border border-gray-800 text-gray-200 rounded-bl-xs w-full"
@@ -140,7 +265,7 @@ export default function AIChat() {
                 </div>
 
                 {msg.role === "user" && (
-                  <div className="bg-gray-700 p-2 rounded-xl text-white mt-1">
+                  <div className="bg-gray-700 p-2 rounded-xl text-white mt-1 shrink-0">
                     <User className="w-4 h-4" />
                   </div>
                 )}
@@ -168,12 +293,14 @@ export default function AIChat() {
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleSendMessage()}
+              onKeyDown={(e) =>
+                e.key === "Enter" && sendMessage(query, currentSession)
+              }
               placeholder="Ask anything across your stored vault..."
               className="flex-1 bg-transparent px-4 py-3 text-sm text-gray-200 placeholder-gray-500 focus:outline-none"
             />
             <button
-              onClick={handleSendMessage}
+              onClick={() => sendMessage(query, currentSession)}
               disabled={isLoading}
               className="bg-[#8b5cf6] hover:bg-[#7c3aed] disabled:opacity-50 text-white p-3 rounded-xl transition-colors"
             >
@@ -183,5 +310,17 @@ export default function AIChat() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function AIChat() {
+  return (
+    <Suspense
+      fallback={
+        <div className="p-10 text-gray-400">Loading Knowledge Assistant...</div>
+      }
+    >
+      <ChatWorkspace />
+    </Suspense>
   );
 }
