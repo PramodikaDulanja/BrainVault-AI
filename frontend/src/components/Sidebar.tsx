@@ -37,7 +37,7 @@ export default function Sidebar() {
     },
     {
       name: "Categories",
-      href: "/graph",
+      href: "/categories",
       icon: <Network className="w-5 h-5" />,
     },
   ];
